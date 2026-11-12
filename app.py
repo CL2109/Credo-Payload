@@ -3,20 +3,32 @@ import pandas as pd
 import plotly.graph_objects as go
 from py3dbp import Packer, Bin, Item
 
-# --- 1. OVERRIDE ITEM TO PREVENT ROTATION ---
-class StrictItem(Item):
+# --- 1. OVERRIDE ITEM TO CONTROL ROTATION ---
+class CustomItem(Item):
     """
-    Overrides the standard py3dbp Item to prevent rotation.
-    When the algorithm tests a rotated state, this returns 
-    impossibly large dimensions, forcing it to only use rotation 0.
+    Overrides the standard py3dbp Item to selectively allow rotations.
+    Py3dbp defines 6 rotation types (0 to 5):
+    0: (W, H, D) - Original
+    1: (H, W, D) - Spun on base (Upright)
+    2, 3, 4, 5 - Tilted on side or flat
     """
+    def __init__(self, name, width, height, depth, weight, allowed_rotations):
+        super().__init__(name, width, height, depth, weight)
+        self.allowed_rotations = allowed_rotations
+
     def get_dimension(self):
-        if getattr(self, 'rotation_type', 0) != 0:
+        current_rotation = getattr(self, 'rotation_type', 0)
+        # If the algorithm tries a rotation we don't allow, report an impossible size
+        if current_rotation not in self.allowed_rotations:
             return [999999, 999999, 999999]
-        return [self.width, self.height, self.depth]
+        
+        # Otherwise, calculate normally
+        if hasattr(Item, 'get_dimension'):
+            return super().get_dimension()
+        else:
+            return super().getDimension()
 
     def getDimension(self):
-        # Compatibility fallback for older versions of py3dbp
         return self.get_dimension()
 
 # --- 2. CREDO DATABASE ---
@@ -52,9 +64,9 @@ box_dims = CREDO_BOXES[selected_box]
 st.sidebar.write(f"**Payload Dims:** {box_dims[0]} x {box_dims[1]} x {box_dims[2]} mm")
 
 st.header("2. Add Products")
-st.write("Enter your products. Check 'Strict Orientation' if the box must stay upright (no rotating).")
+st.write("Enter your products. Use the 'Orientation Rule' column to lock items upright or allow full rotation.")
 
-# Added boolean column for strict orientation
+# Setup dataframe with the new Orientation Rule column
 if "product_data" not in st.session_state:
     st.session_state.product_data = pd.DataFrame({
         "Product Name": ["Vial Box A", "Syringe Box B"],
@@ -62,13 +74,22 @@ if "product_data" not in st.session_state:
         "Width (mm)": [50, 80],
         "Height (mm)": [50, 40],
         "Quantity": [5, 3],
-        "Strict Orientation": [True, False]
+        "Orientation Rule": ["Upright Only", "Any"]
     })
 
-# Render the editable grid (Streamlit will automatically turn the boolean column into checkboxes)
+# Configure the Streamlit grid to display a dropdown menu for the orientation column
 edited_df = st.data_editor(
-    st.session_state.product_data, 
-    num_rows="dynamic", 
+    st.session_state.product_data,
+    column_config={
+        "Orientation Rule": st.column_config.SelectboxColumn(
+            "Orientation Rule",
+            help="How can this item be rotated?",
+            options=["Any", "Upright Only", "Strict (No Rotation)"],
+            required=True,
+            default="Any"
+        )
+    },
+    num_rows="dynamic",
     use_container_width=True
 )
 
@@ -80,17 +101,21 @@ if st.button("Calculate Load & Generate 3D Model", type="primary"):
         if pd.notna(row["Product Name"]) and pd.notna(row["Quantity"]) and pd.notna(row["Length (mm)"]):
             try:
                 qty = int(row["Quantity"])
-                is_strict = bool(row.get("Strict Orientation", False))
+                rule = row.get("Orientation Rule", "Any")
+                
+                # Determine which mathematical rotations to allow based on dropdown
+                if rule == "Strict (No Rotation)":
+                    allowed = [0]
+                elif rule == "Upright Only":
+                    allowed = [0, 1] # 0 = Original, 1 = Base spun 90 degrees (keeps height Up)
+                else:
+                    allowed = [0, 1, 2, 3, 4, 5] # All 6 possible orientations
                 
                 if qty > 0:
                     for i in range(qty):
                         item_name = f"{row['Product Name']} ({i+1})"
-                        
-                        # Apply the StrictItem class if the checkbox is ticked
-                        if is_strict:
-                            packer.add_item(StrictItem(item_name, float(row["Length (mm)"]), float(row["Width (mm)"]), float(row["Height (mm)"]), 1))
-                        else:
-                            packer.add_item(Item(item_name, float(row["Length (mm)"]), float(row["Width (mm)"]), float(row["Height (mm)"]), 1))
+                        # Apply our CustomItem with the allowed rotation rules
+                        packer.add_item(CustomItem(item_name, float(row["Length (mm)"]), float(row["Width (mm)"]), float(row["Height (mm)"]), 1, allowed))
             except (ValueError, TypeError):
                 pass
                 
