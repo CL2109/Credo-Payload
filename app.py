@@ -14,39 +14,30 @@ CREDO_BOXES = {
     "Credo Full Stack": (1027, 825, 953)
 }
 
-# --- 2. HELPER TO DRAW 3D BOX IN PLOTLY ---
 def create_box_mesh(x, y, z, dx, dy, dz, color, name):
-    # The 8 corners of the box
     xp = [x, x+dx, x+dx, x, x, x+dx, x+dx, x]
     yp = [y, y, y+dy, y+dy, y, y, y+dy, y+dy]
     zp = [z, z, z, z, z+dz, z+dz, z+dz, z+dz]
-    
-    # The 12 triangles that make up the 6 faces of the box
     i = [7, 0, 0, 0, 4, 4, 6, 6, 4, 0, 3, 2]
     j = [3, 4, 1, 2, 5, 6, 5, 2, 0, 1, 6, 3]
     k = [0, 7, 2, 3, 6, 7, 1, 1, 5, 5, 7, 6]
-    
     return go.Mesh3d(
         x=xp, y=yp, z=zp, i=i, j=j, k=k,
         color=color, opacity=0.6, name=name, showlegend=True,
         hovertemplate=f"<b>{name}</b><br>Dims: {dx}x{dy}x{dz}<br>Pos: ({x},{y},{z})<extra></extra>"
     )
 
-# --- 3. WEB APP INTERFACE ---
 st.set_page_config(page_title="Credo 3D Load Planner", layout="wide")
 st.title("📦 Credo 3D Load Planner")
 
-# Sidebar for Box Selection
 st.sidebar.header("1. Select Container")
 selected_box = st.sidebar.selectbox("Choose a Credo Box", list(CREDO_BOXES.keys()))
 box_dims = CREDO_BOXES[selected_box]
 st.sidebar.write(f"**Payload Dims:** {box_dims[0]} x {box_dims[1]} x {box_dims[2]} mm")
 
-# Main Area for Product Input
 st.header("2. Add Products")
 st.write("Enter the dimensions and quantities of the products you want to pack.")
 
-# Default data for the editable table
 if "product_data" not in st.session_state:
     st.session_state.product_data = pd.DataFrame({
         "Product Name": ["Vial Box A", "Syringe Box B"],
@@ -56,17 +47,60 @@ if "product_data" not in st.session_state:
         "Quantity": [5, 3]
     })
 
-# Editable grid
 edited_df = st.data_editor(st.session_state.product_data, num_rows="dynamic", use_container_width=True)
 
-# --- 4. PACKING CALCULATION & VISUALIZATION ---
 if st.button("Calculate Load & Generate 3D Model", type="primary"):
     packer = Packer()
-    # Add the selected Credo Box (arbitrary high weight capacity used)
     packer.add_bin(Bin(selected_box, box_dims[0], box_dims[1], box_dims[2], 10000))
     
-    # Add items from the table
     for index, row in edited_df.iterrows():
-        if pd.notna(row["Product Name"]) and row["Quantity"] > 0:
-            for i in range(int(row["Quantity"])):
-                item_name = f"{row['Product Name']} ({i+1})"
+        # Safely check if the row has actual data (ignoring "None" rows)
+        if pd.notna(row["Product Name"]) and pd.notna(row["Quantity"]) and pd.notna(row["Length (mm)"]):
+            try:
+                qty = int(row["Quantity"])
+                if qty > 0:
+                    for i in range(qty):
+                        item_name = f"{row['Product Name']} ({i+1})"
+                        packer.add_item(Item(item_name, float(row["Length (mm)"]), float(row["Width (mm)"]), float(row["Height (mm)"]), 1))
+            except (ValueError, TypeError):
+                pass # Skips the row if there is a typing error like "None"
+                
+    packer.pack()
+    b = packer.bins[0]
+    
+    st.subheader(f"Packing Results for {b.name}")
+    
+    fig = go.Figure()
+    fig.add_trace(create_box_mesh(0, 0, 0, b.width, b.height, b.depth, "rgba(200, 200, 200, 0.1)", "Credo Box Container"))
+    
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
+    product_colors = {}
+    
+    for item in b.items:
+        base_name = item.name.split(" (")[0]
+        if base_name not in product_colors:
+            product_colors[base_name] = colors[len(product_colors) % len(colors)]
+            
+        x, y, z = [float(i) for i in item.position]
+        dx, dy, dz = float(item.width), float(item.height), float(item.depth)
+        fig.add_trace(create_box_mesh(x, y, z, dx, dy, dz, product_colors[base_name], base_name))
+        
+    fig.update_layout(
+        scene=dict(
+            xaxis=dict(title='Length', range=[0, b.width]),
+            yaxis=dict(title='Width', range=[0, b.height]),
+            zaxis=dict(title='Height', range=[0, b.depth]),
+            aspectmode='data'
+        ),
+        margin=dict(l=0, r=0, b=0, t=0),
+        height=600
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+    
+    if b.unfitted_items:
+        st.error(f"⚠️ {len(b.unfitted_items)} item(s) did NOT fit!")
+        unfitted_names = [item.name for item in b.unfitted_items]
+        st.write(", ".join(unfitted_names))
+    else:
+        st.success("✅ All items fit perfectly!")
