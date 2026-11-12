@@ -69,4 +69,4 @@ if st.button("Calculate Load & Generate 3D Model", type="primary"):
     for index, row in edited_df.iterrows():
         if pd.notna(row["Product Name"]) and row["Quantity"] > 0:
             for i in range(int(row["Quantity"])):
-                item_name = f"{row['Product
+                item_name = f"{row['Product Name']} ({i+1})"
