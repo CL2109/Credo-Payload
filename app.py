@@ -3,7 +3,23 @@ import pandas as pd
 import plotly.graph_objects as go
 from py3dbp import Packer, Bin, Item
 
-# --- 1. CREDO DATABASE ---
+# --- 1. OVERRIDE ITEM TO PREVENT ROTATION ---
+class StrictItem(Item):
+    """
+    Overrides the standard py3dbp Item to prevent rotation.
+    When the algorithm tests a rotated state, this returns 
+    impossibly large dimensions, forcing it to only use rotation 0.
+    """
+    def get_dimension(self):
+        if getattr(self, 'rotation_type', 0) != 0:
+            return [999999, 999999, 999999]
+        return [self.width, self.height, self.depth]
+
+    def getDimension(self):
+        # Compatibility fallback for older versions of py3dbp
+        return self.get_dimension()
+
+# --- 2. CREDO DATABASE ---
 CREDO_BOXES = {
     "Credo 4L": (143, 143, 137),
     "Credo 12L": (222, 222, 216),
@@ -36,34 +52,47 @@ box_dims = CREDO_BOXES[selected_box]
 st.sidebar.write(f"**Payload Dims:** {box_dims[0]} x {box_dims[1]} x {box_dims[2]} mm")
 
 st.header("2. Add Products")
-st.write("Enter the dimensions and quantities of the products you want to pack.")
+st.write("Enter your products. Check 'Strict Orientation' if the box must stay upright (no rotating).")
 
+# Added boolean column for strict orientation
 if "product_data" not in st.session_state:
     st.session_state.product_data = pd.DataFrame({
         "Product Name": ["Vial Box A", "Syringe Box B"],
         "Length (mm)": [100, 120],
         "Width (mm)": [50, 80],
         "Height (mm)": [50, 40],
-        "Quantity": [5, 3]
+        "Quantity": [5, 3],
+        "Strict Orientation": [True, False]
     })
 
-edited_df = st.data_editor(st.session_state.product_data, num_rows="dynamic", use_container_width=True)
+# Render the editable grid (Streamlit will automatically turn the boolean column into checkboxes)
+edited_df = st.data_editor(
+    st.session_state.product_data, 
+    num_rows="dynamic", 
+    use_container_width=True
+)
 
 if st.button("Calculate Load & Generate 3D Model", type="primary"):
     packer = Packer()
     packer.add_bin(Bin(selected_box, box_dims[0], box_dims[1], box_dims[2], 10000))
     
     for index, row in edited_df.iterrows():
-        # Safely check if the row has actual data (ignoring "None" rows)
         if pd.notna(row["Product Name"]) and pd.notna(row["Quantity"]) and pd.notna(row["Length (mm)"]):
             try:
                 qty = int(row["Quantity"])
+                is_strict = bool(row.get("Strict Orientation", False))
+                
                 if qty > 0:
                     for i in range(qty):
                         item_name = f"{row['Product Name']} ({i+1})"
-                        packer.add_item(Item(item_name, float(row["Length (mm)"]), float(row["Width (mm)"]), float(row["Height (mm)"]), 1))
+                        
+                        # Apply the StrictItem class if the checkbox is ticked
+                        if is_strict:
+                            packer.add_item(StrictItem(item_name, float(row["Length (mm)"]), float(row["Width (mm)"]), float(row["Height (mm)"]), 1))
+                        else:
+                            packer.add_item(Item(item_name, float(row["Length (mm)"]), float(row["Width (mm)"]), float(row["Height (mm)"]), 1))
             except (ValueError, TypeError):
-                pass # Skips the row if there is a typing error like "None"
+                pass
                 
     packer.pack()
     b = packer.bins[0]
